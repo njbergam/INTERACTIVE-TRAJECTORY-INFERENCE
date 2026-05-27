@@ -1,0 +1,13 @@
+.DS_Store
+
+# Large local dataset (repo root)
+zscape_notochord_timeseries.pkl
+
+plots/
+old/
+
+# data/: only petal_.npz is tracked (GitHub Pages demo)
+data/**
+!data/
+!data/petal_.npz
+!data/manifest.json

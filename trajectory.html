@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Interactive OT & T-Partite Graph Explorer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="vendor/jspdf.umd.min.js"></script>
+    <link rel="stylesheet" href="css/trajectory.css">
+</head>
+<body>
+
+    <div id="drop-zone">
+        <strong>Drag & Drop .npz or .pkl here</strong><br>
+        <span style="font-size:0.85em; color:#9ca3af;">(.npz: Xs.npy / Xs_0.npy… &nbsp;|&nbsp; .pkl: dict with Xs, sparse matrices OK)</span>
+    </div>
+
+    <div id="data-picker">
+        <h3>Select from `data/`</h3>
+        <div class="hint" id="data-picker-hint">Looking for `.npz` / `.pkl` files in `./data/`…</div>
+        <div id="data-file-list"></div>
+    </div>
+
+    <div id="status">Waiting for file...</div>
+
+    <div id="controls">
+        <button id="back-home-btn" type="button">← Choose another dataset</button>
+        <div id="k-sliders-container"></div>
+        <hr style="border-color: #374151; width: 100%; margin: 0.5rem 0;">
+        <div class="control-row">
+            <div class="control-group" style="width: 250px;">
+                <label id="kpca-perplexity-label">Kernel PCA perplexity: 30</label>
+                <input id="kpca-perplexity-slider" type="range" min="5" max="50" step="1" value="30">
+            </div>
+            <div class="control-group" style="width: 250px;">
+                <label id="linkage-method-label">Dendrogram linkage method</label>
+                <select id="linkage-method" style="width:100%; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:0.4rem 0.5rem;">
+                    <option value="average" selected>average (UPGMA)</option>
+                    <option value="single">single</option>
+                    <option value="complete">complete</option>
+                </select>
+            </div>
+        </div>
+        <div class="control-row">
+            <div class="control-group" style="width: 250px;">
+                <label id="epsilon-label">Regularization (ε): Exact </label>
+                <input type="range" id="epsilon-slider" min="0" max="0.2" step="0.005" value="0">
+            </div>
+        </div>
+    </div>
+
+    <div id="viz-container">
+        <div id="scatter-container"></div>
+
+        <div class="main-canvas-panel">
+            <div class="step-title" id="transport-title">T-Partite Optimal Transport</div>
+            <div id="transport-note"></div>
+            <canvas id="t-partite-canvas"></canvas>
+        </div>
+
+        <div class="main-canvas-panel">
+            <div class="step-title">Global Cost Frontier (Sum of K-Means Inertias)</div>
+            <canvas id="global-inertia-canvas"></canvas>
+        </div>
+
+        <div class="main-canvas-panel" id="global-truepi-panel">
+            <div class="step-title">Global Cost Frontier (True OT `pis` Trajectory Cost)</div>
+            <canvas id="global-truepi-canvas"></canvas>
+        </div>
+
+        <div id="main-tooltip" class="tooltip"></div>
+    </div>
+
+    <script type="module" src="js/app.js?v=jspdf-local"></script>
+</body>
+</html>

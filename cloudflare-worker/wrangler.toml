@@ -1,0 +1,7 @@
+name = "iti-llm-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-05-27"
+
+[ai]
+binding = "AI"
+

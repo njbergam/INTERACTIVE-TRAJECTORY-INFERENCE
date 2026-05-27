@@ -1,6 +1,12 @@
 const STORAGE_KEY = 'iti-llm-settings';
 
 const PRESETS = {
+    cloudflare_workers_ai: {
+        label: 'Cloudflare Workers AI (hosted)',
+        // Replace with your deployed worker URL (see cloudflare-worker/README.md)
+        baseUrl: 'https://iti-llm-proxy.njbergam.workers.dev/v1',
+        model: 'default'
+    },
     ollama: {
         label: 'Ollama (local Llama / Qwen)',
         baseUrl: 'http://localhost:11434/v1',

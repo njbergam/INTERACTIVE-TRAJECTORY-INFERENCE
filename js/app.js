@@ -632,6 +632,17 @@ async function runAiExplore({ durationMs = 10_000, prompt = '' } = {}) {
                     }
                     console.warn('LLM plan failed', err);
                     appendAiExploreMessage('status', `LLM unavailable (${err.message}). Using local parser + random search.`);
+                    const msg = String(err?.message || '');
+                    const looksLikeQuota =
+                        /HTTP\s*(402|403|429|503)/i.test(msg)
+                        || /\bquota\b|\brate limit\b|\bneurons?\b|\bexceeded\b/i.test(msg);
+                    if (llmCfg?.preset === 'cloudflare_workers_ai' && looksLikeQuota) {
+                        saveLlmSettings({ enabled: false });
+                        appendAiExploreMessage(
+                            'status',
+                            'Cloudflare free quota/rate-limit hit — disabling hosted LLM and continuing with classical explore.'
+                        );
+                    }
                     useLlm = false;
                 });
         }
@@ -717,6 +728,18 @@ async function runAiExplore({ durationMs = 10_000, prompt = '' } = {}) {
                     .catch(err => {
                         if (isExploreCancelled(myToken, signal)) return;
                         console.warn('LLM next proposal failed', err);
+                        const msg = String(err?.message || '');
+                        const looksLikeQuota =
+                            /HTTP\s*(402|403|429|503)/i.test(msg)
+                            || /\bquota\b|\brate limit\b|\bneurons?\b|\bexceeded\b/i.test(msg);
+                        if (useLlm && llmCfg?.preset === 'cloudflare_workers_ai' && looksLikeQuota) {
+                            saveLlmSettings({ enabled: false });
+                            appendAiExploreMessage(
+                                'status',
+                                'Cloudflare free quota/rate-limit hit — disabling hosted LLM and continuing with classical explore.'
+                            );
+                            useLlm = false;
+                        }
                     })
                     .finally(() => {
                         pendingLlmNext = null;

@@ -12,6 +12,15 @@ body, button, input, select {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
+
+.home-title {
+    width: 100%;
+    font-size: clamp(1.25rem, 2.2vw, 1.85rem);
+    font-weight: 750;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.9rem 0;
+    color: rgba(229, 231, 235, 0.96);
+}
 #drop-zone {
     width: 100%; padding: 1.5rem;
     border: 1.5px dashed rgba(148, 163, 184, 0.35); border-radius: 12px;

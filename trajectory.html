@@ -10,13 +10,18 @@
 </head>
 <body>
 
+    <div class="home-title">Interactive Trajectory Clustering</div>
+
     <div id="drop-zone">
         <strong>Drag & Drop .npz or .pkl here</strong><br>
-        <span style="font-size:0.85em; color:#9ca3af;">(.npz: Xs.npy / Xs_0.npy… &nbsp;|&nbsp; .pkl: dict with Xs, sparse matrices OK)</span>
+        <span style="font-size:0.85em; color:#9ca3af;">
+            <code>data = {np,pickle}.load("...")</code><br>
+            <code>data["Xs"] = [X_1, X_2, ..., X_T]</code> where \(X_i\) is \(n_i \times d_i\) NumPy or sparse array
+        </span>
     </div>
 
     <div id="data-picker">
-        <h3>Select from `data/`</h3>
+        <h3>Toy Dataset Demo</h3>
         <div class="hint" id="data-picker-hint">Looking for `.npz` / `.pkl` files in `./data/`…</div>
         <div id="data-file-list"></div>
     </div>

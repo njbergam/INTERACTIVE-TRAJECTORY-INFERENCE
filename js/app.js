@@ -1,4 +1,4 @@
-import { MAX_PKL_BYTES } from './constants.js';
+import { MAX_PKL_BYTES, COLORS } from './constants.js';
 import { elements } from './dom.js';
 import { rawSequences, state, drawnEdgePaths, dataPickerAvailable, setRawSequences, setDataPickerAvailable } from './state.js';
 
@@ -78,6 +78,366 @@ let pointOtJobId = 0;
 
 const drawnGlobalInertiaPoints = [];
 const drawnGlobalTruePiPoints = [];
+
+function showCombinedPlotModal(show) {
+    if (!elements.combinedPlotModal) return;
+    elements.combinedPlotModal.style.display = show ? 'block' : 'none';
+}
+
+function fitCanvasToRect(canvas, { maxW = 1400, maxH = 900 } = {}) {
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(2, Math.min(maxW, Math.round(rect.width || canvas.width || maxW)));
+    const h = Math.max(2, Math.min(maxH, Math.round((rect.height || 0) || (w * 0.6))));
+    if (canvas.width === w && canvas.height === h) return false;
+    canvas.width = w;
+    canvas.height = h;
+    return true;
+}
+
+function fitHiDPICanvasToRect(canvas, { maxW = 1400, maxH = 900 } = {}) {
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(2, Math.min(maxW, Math.round(rect.width || canvas.clientWidth || maxW)));
+    const cssH = Math.max(2, Math.min(maxH, Math.round((rect.height || 0) || (cssW * 0.6))));
+    const dpr = Math.max(1, Math.min(2.5, window.devicePixelRatio || 1));
+    canvas.style.width = `${cssW}px`;
+    canvas.style.height = `${cssH}px`;
+    const w = Math.round(cssW * dpr);
+    const h = Math.round(cssH * dpr);
+    if (canvas.width === w && canvas.height === h) return false;
+    canvas.width = w;
+    canvas.height = h;
+    return true;
+}
+
+function drawArrow(ctx, x1, y1, x2, y2, { head = 9 } = {}) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+
+    const hx = x2 - ux * head;
+    const hy = y2 - uy * head;
+    const px = -uy;
+    const py = ux;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(hx + px * (head * 0.55), hy + py * (head * 0.55));
+    ctx.lineTo(hx - px * (head * 0.55), hy - py * (head * 0.55));
+    ctx.closePath();
+    ctx.fill();
+}
+
+function hexToRgb(hex) {
+    const h = (hex || '').replace('#', '');
+    if (h.length !== 6) return { r: 148, g: 163, b: 184 };
+    return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16)
+    };
+}
+
+function computeCouplingsForClusters(clusters) {
+    const couplings = [];
+    for (let t = 0; t < clusters.length - 1; t++) {
+        const k1 = state.kValues[t];
+        const k2 = state.kValues[t + 1];
+        const useGW = rawSequences[t].shape[1] !== rawSequences[t + 1].shape[1];
+        const pairKey = useGW ? `${k1}-${k2}-gw-${state.epsilon}` : `${k1}-${k2}-ot`;
+        if (state.otCache[t][pairKey] === undefined) {
+            state.otCache[t][pairKey] = useGW
+                ? gromovWasserstein(clusters[t], clusters[t + 1], state.epsilon)
+                : exactOT(clusters[t], clusters[t + 1]);
+        }
+        const result = state.otCache[t][pairKey];
+        couplings.push(
+            useGW ? result.P : (state.epsilon === 0 ? result.P : sinkhorn(clusters[t], clusters[t + 1], state.epsilon))
+        );
+    }
+    return couplings;
+}
+
+// Match the transport graph's color continuity heuristic (see js/viz/graph.js).
+function computeColorIndexByStepForTransportGraph(clusters, couplings) {
+    const T = clusters.length;
+    const colorIndexByStep = Array.from({ length: T }, () => []);
+    if (!T) return colorIndexByStep;
+
+    const k0 = clusters[0]?.centers?.length ?? 0;
+    colorIndexByStep[0] = Array.from({ length: k0 }, (_, i) => i);
+
+    for (let t = 0; t < T - 1; t++) {
+        const k1 = clusters[t].centers.length;
+        const k2 = clusters[t + 1].centers.length;
+        const P = couplings[t];
+        const prev = colorIndexByStep[t] || Array.from({ length: k1 }, (_, i) => i);
+
+        const best = Array.from({ length: k2 }, (_, j) => {
+            let bi = 0;
+            let bm = -Infinity;
+            for (let i = 0; i < k1; i++) {
+                const m = P?.[i]?.[j] ?? 0;
+                if (m > bm) {
+                    bm = m;
+                    bi = i;
+                }
+            }
+            return { j, i: bi, mass: bm };
+        }).sort((a, b) => (b.mass || 0) - (a.mass || 0));
+
+        const used = new Set();
+        const next = new Array(k2).fill(null);
+        for (const { j, i } of best) {
+            const c = prev[i] ?? i;
+            if (!used.has(c)) {
+                next[j] = c;
+                used.add(c);
+            }
+        }
+
+        let cursor = 0;
+        for (let j = 0; j < k2; j++) {
+            if (next[j] !== null) continue;
+            while (used.has(cursor)) cursor++;
+            next[j] = cursor;
+            used.add(cursor);
+            cursor++;
+        }
+
+        colorIndexByStep[t + 1] = next;
+    }
+
+    return colorIndexByStep;
+}
+
+function generateCombinedTrajectoryPlot() {
+    try {
+        showCombinedPlotModal(true);
+
+        if (!rawSequences.length || !lastClusters?.length) {
+            elements.status.textContent = 'Combined plot: load a dataset first.';
+            return;
+        }
+        const clusters = lastClusters;
+        const T = clusters.length;
+        if (T < 2) {
+            elements.status.textContent = 'Combined plot requires at least 2 timesteps.';
+            return;
+        }
+
+        const canvas = elements.combinedPlotCanvas;
+        const ctx = elements.combinedPlotCtx;
+        if (!canvas || !ctx) {
+            elements.status.textContent = 'Combined plot canvas not found.';
+            return;
+        }
+        // Ensure crisp rendering on HiDPI screens.
+        fitHiDPICanvasToRect(canvas, { maxW: 1600, maxH: 980 });
+
+        // Require consistent dimensions for a single PCA over all points.
+        const d0 = rawSequences[0].shape?.[1] ?? null;
+        if (!d0 || rawSequences.some(s => (s.shape?.[1] ?? null) !== d0)) {
+            elements.status.textContent = 'Combined plot requires equal feature dimension across steps (no GW edges).';
+            return;
+        }
+
+        elements.status.textContent = 'Generating combined PCA plot…';
+
+        const couplings = computeCouplingsForClusters(clusters);
+        const colorIndexByStep = computeColorIndexByStepForTransportGraph(clusters, couplings);
+
+        // Concatenate all points and run one PCA.
+        const offsets = [];
+        let totalN = 0;
+        for (let t = 0; t < T; t++) {
+            offsets[t] = totalN;
+            totalN += rawSequences[t].shape[0];
+        }
+        const all = new Float64Array(totalN * d0);
+        for (let t = 0; t < T; t++) {
+            const src = rawSequences[t].data;
+            all.set(src, offsets[t] * d0);
+        }
+        const coords2d = runPCARaw(all, totalN, d0);
+
+        // Compute bounds.
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const p of coords2d) {
+            minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+            minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+        }
+        const pad = 52;
+        const rangeX = (maxX - minX) || 1;
+        const rangeY = (maxY - minY) || 1;
+        const scale = Math.min((canvas.width - 2 * pad) / rangeX, (canvas.height - 2 * pad) / rangeY);
+        const tx = (x) => pad + (x - minX) * scale;
+        const ty = (y) => canvas.height - pad - (y - minY) * scale;
+
+    // Precompute centroid positions in PCA space (per step, per cluster).
+    const centroidXY = Array.from({ length: T }, (_, t) => {
+        const k = clusters[t].centers.length;
+        return Array.from({ length: k }, () => ({ x: 0, y: 0, n: 0 }));
+    });
+    for (let t = 0; t < T; t++) {
+        const n = rawSequences[t].shape[0];
+        const off = offsets[t];
+        const assn = clusters[t].assignments;
+        for (let i = 0; i < n; i++) {
+            const c = assn[i];
+            const p = coords2d[off + i];
+            const acc = centroidXY[t][c];
+            acc.x += p[0];
+            acc.y += p[1];
+            acc.n += 1;
+        }
+        for (const acc of centroidXY[t]) {
+            const denom = acc.n || 1;
+            acc.x /= denom;
+            acc.y /= denom;
+        }
+    }
+
+        // Draw background.
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#0b1220';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Draw centroid-to-centroid transport edges (major flows), styled like the OT graph.
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.globalAlpha = 0.95;
+        for (let t = 0; t < T - 1; t++) {
+            const P = couplings[t];
+            const k1 = clusters[t].centers.length;
+            const k2 = clusters[t + 1].centers.length;
+            let maxP = 0;
+            for (let i = 0; i < k1; i++) for (let j = 0; j < k2; j++) if ((P?.[i]?.[j] ?? 0) > maxP) maxP = P[i][j];
+            const denom = maxP || 1;
+
+            for (let i = 0; i < k1; i++) {
+                const a = centroidXY[t]?.[i];
+                if (!a) continue;
+                for (let j = 0; j < k2; j++) {
+                    const mass = P?.[i]?.[j] ?? 0;
+                    if (mass < 1e-6) continue;
+                    const b = centroidXY[t + 1]?.[j];
+                    if (!b) continue;
+
+                    const intensity = Math.max(0, Math.min(1, mass / denom));
+                    // Keep only "major" edges but scale threshold with intensity.
+                    if (intensity < 0.03) continue;
+
+                    const srcColorIdx = colorIndexByStep[t]?.[i] ?? i;
+                    const dstColorIdx = colorIndexByStep[t + 1]?.[j] ?? j;
+                    const srcRgb = hexToRgb(COLORS[srcColorIdx % COLORS.length]);
+                    const dstRgb = hexToRgb(COLORS[dstColorIdx % COLORS.length]);
+
+                    const x1 = tx(a.x), y1 = ty(a.y);
+                    const x2 = tx(b.x), y2 = ty(b.y);
+
+                    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+                    const a0 = 0.08 + 0.55 * intensity;
+                    const a1 = 0.06 + 0.48 * intensity;
+                    grad.addColorStop(0, `rgba(${srcRgb.r}, ${srcRgb.g}, ${srcRgb.b}, ${a0})`);
+                    grad.addColorStop(1, `rgba(${dstRgb.r}, ${dstRgb.g}, ${dstRgb.b}, ${a1})`);
+
+                    ctx.strokeStyle = grad;
+                    ctx.fillStyle = `rgba(${dstRgb.r}, ${dstRgb.g}, ${dstRgb.b}, ${0.10 + 0.55 * intensity})`;
+                    ctx.lineWidth = Math.max(0.9, 1.1 + Math.pow(intensity, 0.65) * 7.5);
+                    ctx.shadowColor = 'rgba(0,0,0,0.25)';
+                    ctx.shadowBlur = 7;
+                    drawArrow(ctx, x1, y1, x2, y2, { head: 8 + 6 * intensity });
+                    ctx.shadowBlur = 0;
+                }
+            }
+        }
+        ctx.restore();
+
+        // Draw points, colored to match the transport graph (continuity heuristic).
+        const pointR = Math.max(2.2, (window.devicePixelRatio || 1) * 1.75);
+        for (let t = 0; t < T; t++) {
+            const n = rawSequences[t].shape[0];
+            const off = offsets[t];
+            const assn = clusters[t].assignments;
+            for (let i = 0; i < n; i++) {
+                const c = assn[i];
+                const colorIdx = colorIndexByStep[t]?.[c] ?? c;
+                const hex = COLORS[colorIdx % COLORS.length];
+                const rgb = hexToRgb(hex);
+                const p = coords2d[off + i];
+                ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.55)`;
+                ctx.beginPath();
+                ctx.arc(tx(p[0]), ty(p[1]), pointR, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Draw centroid markers on top.
+        for (let t = 0; t < T; t++) {
+            const k = clusters[t].centers.length;
+            for (let i = 0; i < k; i++) {
+                const colorIdx = colorIndexByStep[t]?.[i] ?? i;
+                const rgb = hexToRgb(COLORS[colorIdx % COLORS.length]);
+                const c = centroidXY[t][i];
+                const x = tx(c.x);
+                const y = ty(c.y);
+                ctx.beginPath();
+                ctx.arc(x, y, 5.5, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.95)`;
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+                ctx.lineWidth = 1.6;
+                ctx.stroke();
+            }
+        }
+        ctx.globalAlpha = 1;
+        elements.status.textContent = 'Combined plot generated.';
+    } catch (err) {
+        const msg = err?.message ? String(err.message) : String(err);
+        elements.status.textContent = `Combined plot error: ${msg}`;
+        console.error(err);
+        showCombinedPlotModal(true);
+    }
+}
+
+function wireCombinedPlotUi() {
+    const btn = elements.generateCombinedPlotBtn;
+    if (btn && btn.dataset.wired !== '1') {
+        btn.dataset.wired = '1';
+        btn.onclick = () => {
+            try {
+                btn.disabled = true;
+                btn.textContent = 'Generating…';
+                generateCombinedTrajectoryPlot();
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Generate combined plot';
+            }
+        };
+    }
+
+    const modal = elements.combinedPlotModal;
+    if (modal && modal.dataset.wired !== '1') {
+        modal.dataset.wired = '1';
+        modal.addEventListener('click', (e) => {
+            const el = e.target;
+            if (!(el instanceof HTMLElement)) return;
+            if (el.dataset.action === 'close') showCombinedPlotModal(false);
+        });
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') showCombinedPlotModal(false);
+        });
+    }
+}
 
 let aiExploreRunning = false;
 let aiExploreCancelToken = 0;
@@ -257,6 +617,52 @@ function scoreConfigFast(kValues, {
     const sumK = Math.max(1, kValues.reduce((a, b) => a + b, 0));
     const inertiaTerm = sumInertia / sumK;
 
+    // Transport entropy: lower is generally better (sharper, less diffuse couplings).
+    // We compute normalized entropy per step in [0,1] using the current cluster-level couplings.
+    const couplingEntropy01 = (P) => {
+        if (!P?.length || !P[0]?.length) return 0;
+        const k1 = P.length;
+        const k2 = P[0].length;
+        let sum = 0;
+        let H = 0;
+        for (let i = 0; i < k1; i++) {
+            const row = P[i];
+            for (let j = 0; j < k2; j++) {
+                const v = row[j] || 0;
+                if (v > 0) {
+                    sum += v;
+                    H -= v * Math.log(v);
+                }
+            }
+        }
+        if (!(sum > 0)) return 0;
+        // Convert to entropy of normalized probabilities.
+        H = (H / sum) + Math.log(sum); // ( -Σ v log v )/sum + log(sum)
+        const denom = Math.log(Math.max(2, k1 * k2));
+        return denom > 0 ? Math.max(0, Math.min(1, H / denom)) : 0;
+    };
+
+    let meanEntropy = 0;
+    if (clusters.length > 1) {
+        let steps = 0;
+        for (let t = 0; t < clusters.length - 1; t++) {
+            const k1 = kValues[t];
+            const k2 = kValues[t + 1];
+            const useGW = rawSequences[t].shape[1] !== rawSequences[t + 1].shape[1];
+            const pairKey = useGW ? `${k1}-${k2}-gw-${state.epsilon}` : `${k1}-${k2}-ot`;
+            if (state.otCache[t][pairKey] === undefined) {
+                state.otCache[t][pairKey] = useGW
+                    ? gromovWasserstein(clusters[t], clusters[t + 1], state.epsilon)
+                    : exactOT(clusters[t], clusters[t + 1]);
+            }
+            const result = state.otCache[t][pairKey];
+            const P = useGW ? result.P : (state.epsilon === 0 ? result.P : sinkhorn(clusters[t], clusters[t + 1], state.epsilon));
+            meanEntropy += couplingEntropy01(P);
+            steps++;
+        }
+        meanEntropy = steps ? meanEntropy / steps : 0;
+    }
+
     let combined =
         trueCost !== null && allowTrueCost
             ? weights.wInertia * inertiaTerm + weights.wTrue * trueCost
@@ -267,6 +673,8 @@ function scoreConfigFast(kValues, {
     }
     combined += exploreComplexityPenalty(kValues, plan);
     combined += feedbackAdjustmentForShape(shapeStats, plotFeedback);
+    // Mild preference for lower-entropy transport maps.
+    combined += 0.22 * meanEntropy;
     if (plan) combined += promptConstraintPenalty(kValues, plan);
 
     let annotationFidelity = null;
@@ -291,6 +699,7 @@ function scoreConfigFast(kValues, {
         sumInertia,
         trueCost,
         sepScore,
+        meanTransportEntropy: meanEntropy,
         shapeStats,
         visionQuality,
         visionAssessment: visionAssessment || null,
@@ -1125,6 +1534,7 @@ function initUI() {
     elements.dataPicker.style.display = 'none';
 
     ensureResizeControl(updateVisualization);
+    wireCombinedPlotUi();
 
     const T = rawSequences.length;
     state.kValues = Array(T).fill(5);
@@ -1451,41 +1861,52 @@ async function saveSnapshotPdf() {
     let y = margin;
 
     pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(16);
+    pdf.setFontSize(17);
     pdf.text('Interactive Trajectory Inference', margin, y);
-    y += 22;
+
+    // Accent rule
+    y += 10;
+    pdf.setDrawColor(245, 158, 11); // amber
+    pdf.setLineWidth(2);
+    pdf.line(margin, y, margin + 170, y);
+    y += 18;
+
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(10);
 
-    const metaLines = [
-        `Saved: ${timestamp}`,
-        `Dataset: ${lastLoadedFileName || '(unknown)'}`,
-        `K per step: [${configStr}]`,
-        `ε: ${state.epsilon === 0 ? 'exact OT' : state.epsilon}`,
-        `GW edges (dim mismatch): ${gwEdges.length ? gwEdges.map(t => t + 1).join(', ') : 'none'}`,
-        `Plot size: ${state.plotSize}px`
+    // Clean key/value summary (more readable than raw JSON)
+    const kv = [
+        ['Saved', timestamp],
+        ['Dataset', lastLoadedFileName || '(unknown)'],
+        ['K per step', `[${configStr}]`],
+        ['ε', state.epsilon === 0 ? 'exact OT' : String(state.epsilon)],
+        ['GW edges', gwEdges.length ? gwEdges.map(t => `${t + 1}→${t + 2}`).join(', ') : 'none'],
+        ['Plot size', `${state.plotSize}px`]
     ];
-    for (const line of metaLines) {
-        pdf.text(line, margin, y);
+    pdf.setTextColor(229, 231, 235);
+    const keyX = margin;
+    const valX = margin + 110;
+    for (const [k, v] of kv) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(`${k}:`, keyX, y);
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(String(v), valX, y);
         y += 14;
     }
 
+    // Add a small first thumbnail (transport map) on cover page
     y += 8;
-    pdf.setFont('helvetica', 'bold');
-    pdf.text('Settings (JSON)', margin, y);
-    y += 12;
-    pdf.setFont('courier', 'normal');
-    pdf.setFontSize(8);
-    const jsonLines = JSON.stringify(meta, null, 2).split('\n');
-    const pageH = pdf.internal.pageSize.getHeight();
-    const lineH = 9;
-    for (const line of jsonLines) {
-        if (y > pageH - margin) {
-            pdf.addPage('letter', 'portrait');
-            y = margin;
-        }
-        pdf.text(line.slice(0, 95), margin, y);
-        y += lineH;
+    const coverThumb = plotItems[0]?.canvas;
+    if (coverThumb) {
+        const pageW = pdf.internal.pageSize.getWidth();
+        const maxW = pageW - margin * 2;
+        const thumbW = Math.min(maxW, 520);
+        const aspect = coverThumb.height / coverThumb.width;
+        const thumbH = thumbW * aspect;
+        const x = margin;
+        const imgData = coverThumb.toDataURL('image/png');
+        pdf.addImage(imgData, 'PNG', x, y, thumbW, thumbH);
+        y += thumbH + 10;
     }
 
     for (const item of plotItems) {
@@ -1787,13 +2208,12 @@ async function startProgressivePointOTGammas() {
         return;
     }
     const btn = document.createElement('button');
-    btn.className = 'sweep-btn';
+    btn.className = 'sweep-btn save-snapshot-btn';
     btn.type = 'button';
-    btn.textContent = 'Save snapshot (PDF)';
+    btn.textContent = 'Save PDF';
     btn.dataset.action = 'save-snapshot';
-    btn.style.marginBottom = '0.25rem';
     btn.onclick = saveSnapshotPdf;
-    elements.controls.insertBefore(btn, elements.kContainer);
+    elements.controls.appendChild(btn);
 })();
 
 // --- Drag & Drop + Home ---

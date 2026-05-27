@@ -27,35 +27,41 @@
         <button id="back-home-btn" type="button">← Choose another dataset</button>
         <div id="k-sliders-container"></div>
         <hr style="border-color: #374151; width: 100%; margin: 0.5rem 0;">
-        <div class="control-row">
-            <div class="control-group" style="width: 250px;">
-                <label id="kpca-perplexity-label">Kernel PCA perplexity: 30</label>
-                <input id="kpca-perplexity-slider" type="range" min="5" max="50" step="1" value="30">
+        <details id="advanced-controls" open>
+            <summary>Embedding / OT settings</summary>
+            <div class="control-row">
+                <div class="control-group" style="width: 250px;">
+                    <label id="kpca-perplexity-label">Kernel PCA perplexity: 30</label>
+                    <input id="kpca-perplexity-slider" type="range" min="5" max="50" step="1" value="30">
+                </div>
+                <div class="control-group" style="width: 250px;">
+                    <label id="linkage-method-label">Dendrogram linkage method</label>
+                    <select id="linkage-method" style="width:100%; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:0.4rem 0.5rem;">
+                        <option value="average" selected>average (UPGMA)</option>
+                        <option value="single">single</option>
+                        <option value="complete">complete</option>
+                    </select>
+                </div>
             </div>
-            <div class="control-group" style="width: 250px;">
-                <label id="linkage-method-label">Dendrogram linkage method</label>
-                <select id="linkage-method" style="width:100%; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:0.4rem 0.5rem;">
-                    <option value="average" selected>average (UPGMA)</option>
-                    <option value="single">single</option>
-                    <option value="complete">complete</option>
-                </select>
+            <div class="control-row">
+                <div class="control-group" style="width: 250px;">
+                    <label id="epsilon-label">Regularization (ε): Exact </label>
+                    <input type="range" id="epsilon-slider" min="0" max="0.2" step="0.005" value="0">
+                </div>
             </div>
-        </div>
-        <div class="control-row">
-            <div class="control-group" style="width: 250px;">
-                <label id="epsilon-label">Regularization (ε): Exact </label>
-                <input type="range" id="epsilon-slider" min="0" max="0.2" step="0.005" value="0">
-            </div>
-        </div>
+        </details>
     </div>
 
     <div id="viz-container">
         <div id="scatter-container"></div>
 
-        <div class="main-canvas-panel">
+        <div class="main-canvas-panel" id="transport-panel">
             <div class="step-title" id="transport-title">T-Partite Optimal Transport</div>
             <div id="transport-note"></div>
             <canvas id="t-partite-canvas"></canvas>
+            <button id="generate-combined-plot-btn" type="button" class="transport-action-btn">
+                Generate combined plot
+            </button>
         </div>
 
         <div class="main-canvas-panel">
@@ -69,6 +75,20 @@
         </div>
 
         <div id="main-tooltip" class="tooltip"></div>
+    </div>
+
+    <div id="combined-plot-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-action="close"></div>
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title">Combined PCA trajectory plot</div>
+                <button type="button" class="modal-close" data-action="close">×</button>
+            </div>
+            <div class="modal-body">
+                <canvas id="combined-plot-canvas" width="1200" height="720"></canvas>
+                <div class="modal-hint">Colors = primary OT trajectories; arrows = centroid flow over time.</div>
+            </div>
+        </div>
     </div>
 
     <script type="module" src="js/app.js?v=jspdf-local"></script>

@@ -23,5 +23,9 @@ export const elements = {
     globalTruePiPanel: document.getElementById('global-truepi-panel'),
     tooltip: document.getElementById('main-tooltip'),
     transportNote: document.getElementById('transport-note'),
+    generateCombinedPlotBtn: document.getElementById('generate-combined-plot-btn'),
+    combinedPlotModal: document.getElementById('combined-plot-modal'),
+    combinedPlotCanvas: document.getElementById('combined-plot-canvas'),
+    combinedPlotCtx: document.getElementById('combined-plot-canvas')?.getContext('2d') || null,
     elbowCanvases: []
 };

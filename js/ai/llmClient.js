@@ -171,6 +171,7 @@ export async function visionCompletion({
 }
 
 export async function testLlmConnection(settings = null) {
+    const cfg = settings || getLlmSettings();
     const content = await chatCompletion({
         settings,
         messages: [
@@ -179,5 +180,10 @@ export async function testLlmConnection(settings = null) {
         ]
     });
     const j = parseJsonFromLlm(content);
-    return j?.ok === true || /ok|ready|pong/i.test(content);
+    if (j?.ok === true) return true;
+    if (/ok|ready|pong/i.test(content)) return true;
+    // Workers AI models sometimes ignore strict formatting; for our hosted preset,
+    // treat any non-empty response as a successful connectivity check.
+    if (cfg?.preset === 'cloudflare_workers_ai') return !!(content && content.trim());
+    return false;
 }

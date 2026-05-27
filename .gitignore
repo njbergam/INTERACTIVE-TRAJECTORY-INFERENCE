@@ -9,5 +9,5 @@ old/
 # data/: only petal_.npz is tracked (GitHub Pages demo)
 data/**
 !data/
-!data/petal.npz
+!data/petal_.npz
 !data/manifest.json

@@ -40,7 +40,8 @@ import {
     clearKernelPcaPlotAnnotations,
     formatAnnotationPromptBlock,
     mergeAnnotationsIntoPlan,
-    refreshAnnotationLayers
+    refreshAnnotationLayers,
+    snapshotHasAnnotationEmphasis
 } from './ui/plotAnnotations.js';
 import {
     evaluateAnnotationFidelity,
@@ -277,8 +278,10 @@ function scoreConfigFast(kValues, {
             clusters,
             independentScale: lastIndependentScale
         });
-        combined += annotationFidelityPenalty(annotationFidelity);
-        combined -= weights.wSep * 4.2 * annotationFidelity.overall * Math.max(1, annotationFidelity.totalCircles);
+        const annotationEmphasis = snapshotHasAnnotationEmphasis(annotationSnapshot);
+        combined += annotationFidelityPenalty(annotationFidelity, { emphasis: annotationEmphasis });
+        const annSepBoost = annotationEmphasis ? 5.4 : 4.2;
+        combined -= weights.wSep * annSepBoost * annotationFidelity.overall * Math.max(1, annotationFidelity.totalCircles);
     }
 
     const sepScore = geomShape + (visionQuality ?? 0) * 3.5
@@ -1110,50 +1113,6 @@ function initUI() {
     const kSliders = [];
     const kLabels = [];
 
-    // Insert a "set all K" row above the per-step sliders.
-    const globalKRow = document.createElement('div');
-    globalKRow.className = 'control-row';
-    globalKRow.style.alignItems = 'flex-end';
-    globalKRow.style.marginBottom = '0.25rem';
-
-    const globalKGroup = document.createElement('div');
-    globalKGroup.className = 'control-group';
-    globalKGroup.style.width = '220px';
-
-    const globalKLabel = document.createElement('label');
-    globalKLabel.textContent = 'Set all steps K to:';
-
-    const globalKInput = document.createElement('input');
-    globalKInput.type = 'number';
-    globalKInput.min = '1';
-    globalKInput.max = '15';
-    globalKInput.step = '1';
-    globalKInput.value = String(state.kValues[0] ?? 5);
-    globalKInput.style.width = '100%';
-
-    const applyAllKBtn = document.createElement('button');
-    applyAllKBtn.className = 'sweep-btn';
-    applyAllKBtn.type = 'button';
-    applyAllKBtn.textContent = 'Apply';
-    applyAllKBtn.onclick = () => {
-        const v = parseInt(globalKInput.value, 10);
-        const nextK = Math.min(15, Math.max(1, Number.isFinite(v) ? v : 5));
-        for (let i = 0; i < T; i++) {
-            if (isStepKLocked(i)) continue;
-            state.kValues[i] = nextK;
-            if (kSliders[i]) kSliders[i].value = String(nextK);
-            if (kLabels[i]) kLabels[i].textContent = `Step ${i + 1} Clusters: ${nextK}`;
-        }
-        updateVisualization();
-    };
-
-    globalKGroup.appendChild(globalKLabel);
-    globalKGroup.appendChild(globalKInput);
-    globalKGroup.appendChild(applyAllKBtn);
-    globalKRow.appendChild(globalKGroup);
-
-    elements.controls.insertBefore(globalKRow, elements.kContainer);
-
     for (let t = 0; t < T; t++) {
         const group = document.createElement('div');
         group.className = 'control-group';
@@ -1916,7 +1875,7 @@ function bindAiExploreWidgetRefs(widget) {
 
     const prompt = document.createElement('textarea');
     prompt.className = 'ai-explore-prompt';
-    prompt.placeholder = '👍/👎 plots; drag circles on PCA/kernel PCA for clusters; 🔒 locks K per step. Explore consumes drawings & thumbs, then resets them.';
+    prompt.placeholder = '👍/👎 plots; drag circles on PCA/kernel PCA; click ! for must-match; 🔒 locks K per step. Explore consumes drawings & thumbs, then resets them.';
 
     const llmDetails = document.createElement('details');
     llmDetails.className = 'ai-explore-llm-settings';

@@ -28,6 +28,7 @@ export function createDefaultState() {
         plotSize: 400,
         plotFeedback: {},
         plotAnnotations: {},
+        plotAnnotationEmphasis: {},
         kLocks: []
     };
 }

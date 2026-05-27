@@ -2,6 +2,50 @@ import { COLORS } from '../constants.js';
 import { wrapPlotCanvas, plotIdStep } from '../ui/plotFeedback.js';
 import { refreshAnnotationLayers } from '../ui/plotAnnotations.js';
 
+/** Persists across scatter re-draws (kernel PCA / dendrogram still computing). */
+export const plotSectionCollapsed = {
+    pca: false,
+    kpca: true,
+    dendro: true
+};
+
+function appendCollapsibleSection(panel, sectionKey, titleText, buildContent) {
+    const collapsed = !!plotSectionCollapsed[sectionKey];
+    const section = document.createElement('div');
+    section.className = `plot-section plot-section--${sectionKey}`;
+    if (collapsed) section.classList.add('plot-section--collapsed');
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'plot-section-toggle';
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+
+    const chevron = document.createElement('span');
+    chevron.className = 'plot-section-chevron';
+    chevron.textContent = collapsed ? '▶' : '▼';
+    const title = document.createElement('span');
+    title.className = 'plot-section-title';
+    title.textContent = titleText;
+    toggle.append(chevron, title);
+
+    const body = document.createElement('div');
+    body.className = 'plot-section-body';
+    if (collapsed) body.hidden = true;
+
+    toggle.addEventListener('click', () => {
+        const nowCollapsed = !body.hidden;
+        body.hidden = nowCollapsed;
+        plotSectionCollapsed[sectionKey] = nowCollapsed;
+        section.classList.toggle('plot-section--collapsed', nowCollapsed);
+        chevron.textContent = nowCollapsed ? '▶' : '▼';
+        toggle.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+    });
+
+    buildContent(body);
+    section.append(toggle, body);
+    panel.appendChild(section);
+}
+
 export function runPCARaw(data, n, d) {
     const mean = new Float64Array(d);
     for (let i = 0; i < n; i++) {
@@ -104,117 +148,102 @@ export function drawScatterPlots(
         panel.className = 'scatter-panel';
         panel.style.cssText = `text-align: center; margin-bottom: 20px; width: ${plotSize}px;`;
 
-        // --- PCA ---
-        const pcaLabel = document.createElement('div');
-        pcaLabel.textContent = `Step ${t + 1} (PCA)`;
-        pcaLabel.style.color = '#9ca3af';
-        pcaLabel.style.marginBottom = '5px';
-        panel.appendChild(pcaLabel);
+        appendCollapsibleSection(panel, 'pca', `Step ${t + 1} (PCA)`, (body) => {
+            const pcaCanvas = document.createElement('canvas');
+            pcaCanvas.width = plotSize;
+            pcaCanvas.height = plotSize;
+            pcaCanvas.style.backgroundColor = '#111827';
+            pcaCanvas.style.border = '1px solid #374151';
+            body.appendChild(wrapPlotCanvas(pcaCanvas, plotIdStep('pca', t + 1)));
 
-        const pcaCanvas = document.createElement('canvas');
-        pcaCanvas.width = plotSize;
-        pcaCanvas.height = plotSize;
-        pcaCanvas.style.backgroundColor = '#111827';
-        pcaCanvas.style.border = '1px solid #374151';
-        panel.appendChild(wrapPlotCanvas(pcaCanvas, plotIdStep('pca', t + 1)));
-
-        const pcaCtx = pcaCanvas.getContext('2d');
-        const pcaPoints = pcaPointsByStep[t];
-        let minX = globalMinX, minY = globalMinY, range = globalRange;
-        if (independentScale) {
-            let localMinX = Infinity, localMaxX = -Infinity, localMinY = Infinity, localMaxY = -Infinity;
-            pcaPoints.forEach(p => {
-                localMinX = Math.min(localMinX, p[0]); localMaxX = Math.max(localMaxX, p[0]);
-                localMinY = Math.min(localMinY, p[1]); localMaxY = Math.max(localMaxY, p[1]);
-            });
-            minX = localMinX;
-            minY = localMinY;
-            range = Math.max(localMaxX - localMinX, localMaxY - localMinY) || 1;
-        }
-        pcaPoints.forEach((p, i) => {
-            const clusterIdx = c.assignments[i];
-            pcaCtx.fillStyle = COLORS[clusterIdx % COLORS.length];
-            const x = ((p[0] - minX) / range) * pcaCanvas.width;
-            const y = ((p[1] - minY) / range) * pcaCanvas.height;
-            pcaCtx.beginPath();
-            pcaCtx.arc(x, y, 2, 0, Math.PI * 2);
-            pcaCtx.fill();
-        });
-
-        // --- Kernel PCA ---
-        const kPcaLabel = document.createElement('div');
-        kPcaLabel.textContent = 'Kernel PCA';
-        kPcaLabel.style.color = '#9ca3af';
-        kPcaLabel.style.margin = '8px 0 5px 0';
-        panel.appendChild(kPcaLabel);
-
-        const kPcaCanvas = document.createElement('canvas');
-        kPcaCanvas.width = plotSize;
-        kPcaCanvas.height = plotSize;
-        kPcaCanvas.style.backgroundColor = '#111827';
-        kPcaCanvas.style.border = '1px solid #374151';
-        panel.appendChild(wrapPlotCanvas(kPcaCanvas, plotIdStep('kpca', t + 1)));
-
-        const kPcaCtx = kPcaCanvas.getContext('2d');
-        if (hasKernel && kernelPcaPointsByStep[t]) {
-            const kPca = kernelPcaPointsByStep[t];
-            const kPcaPoints = Array.isArray(kPca.coords) ? kPca.coords : kPca;
-            const kPcaIndices = Array.isArray(kPca.sampledIndices) ? kPca.sampledIndices : null;
-            let kMinX = kernelGlobalMinX, kMinY = kernelGlobalMinY, kRange = kernelGlobalRange;
+            const pcaCtx = pcaCanvas.getContext('2d');
+            const pcaPoints = pcaPointsByStep[t];
+            let minX = globalMinX, minY = globalMinY, range = globalRange;
             if (independentScale) {
                 let localMinX = Infinity, localMaxX = -Infinity, localMinY = Infinity, localMaxY = -Infinity;
-                kPcaPoints.forEach(p => {
+                pcaPoints.forEach(p => {
                     localMinX = Math.min(localMinX, p[0]); localMaxX = Math.max(localMaxX, p[0]);
                     localMinY = Math.min(localMinY, p[1]); localMaxY = Math.max(localMaxY, p[1]);
                 });
-                kMinX = localMinX;
-                kMinY = localMinY;
-                kRange = Math.max(localMaxX - localMinX, localMaxY - localMinY) || 1;
+                minX = localMinX;
+                minY = localMinY;
+                range = Math.max(localMaxX - localMinX, localMaxY - localMinY) || 1;
             }
-            const drawIdxs = kPcaIndices || kPcaPoints.map((_, i) => i);
-            kPcaPoints.forEach((p, localI) => {
-                const globalI = drawIdxs[localI];
-                const clusterIdx = c.assignments[globalI];
-                kPcaCtx.fillStyle = COLORS[clusterIdx % COLORS.length];
-                const x = ((p[0] - kMinX) / kRange) * kPcaCanvas.width;
-                const y = ((p[1] - kMinY) / kRange) * kPcaCanvas.height;
-                kPcaCtx.beginPath();
-                kPcaCtx.arc(x, y, 2, 0, Math.PI * 2);
-                kPcaCtx.fill();
+            pcaPoints.forEach((p, i) => {
+                const clusterIdx = c.assignments[i];
+                pcaCtx.fillStyle = COLORS[clusterIdx % COLORS.length];
+                const x = ((p[0] - minX) / range) * pcaCanvas.width;
+                const y = ((p[1] - minY) / range) * pcaCanvas.height;
+                pcaCtx.beginPath();
+                pcaCtx.arc(x, y, 2, 0, Math.PI * 2);
+                pcaCtx.fill();
             });
-        } else {
-            kPcaCtx.fillStyle = '#9ca3af';
-            kPcaCtx.font = '12px sans-serif';
-            kPcaCtx.textAlign = 'center';
-            kPcaCtx.fillText('Computing...', kPcaCanvas.width / 2, kPcaCanvas.height / 2);
-        }
+        });
 
-        // --- Dendrogram ---
-        const dendroLabel = document.createElement('div');
-        dendroLabel.textContent = `Dendrogram (${t + 1})`;
-        dendroLabel.style.color = '#9ca3af';
-        dendroLabel.style.margin = '8px 0 5px 0';
-        panel.appendChild(dendroLabel);
+        appendCollapsibleSection(panel, 'kpca', 'Kernel PCA', (body) => {
+            const kPcaCanvas = document.createElement('canvas');
+            kPcaCanvas.width = plotSize;
+            kPcaCanvas.height = plotSize;
+            kPcaCanvas.style.backgroundColor = '#111827';
+            kPcaCanvas.style.border = '1px solid #374151';
+            body.appendChild(wrapPlotCanvas(kPcaCanvas, plotIdStep('kpca', t + 1)));
 
-        const dendroCanvas = document.createElement('canvas');
-        dendroCanvas.width = plotSize;
-        dendroCanvas.height = dendroHeight;
-        dendroCanvas.className = 'dendrogram-canvas';
-        dendroCanvas.style.backgroundColor = '#111827';
-        dendroCanvas.style.border = '1px solid #374151';
-        dendroCanvas.style.aspectRatio = 'auto';
-        panel.appendChild(wrapPlotCanvas(dendroCanvas, plotIdStep('dendro', t + 1)));
+            const kPcaCtx = kPcaCanvas.getContext('2d');
+            if (hasKernel && kernelPcaPointsByStep[t]) {
+                const kPca = kernelPcaPointsByStep[t];
+                const kPcaPoints = Array.isArray(kPca.coords) ? kPca.coords : kPca;
+                const kPcaIndices = Array.isArray(kPca.sampledIndices) ? kPca.sampledIndices : null;
+                let kMinX = kernelGlobalMinX, kMinY = kernelGlobalMinY, kRange = kernelGlobalRange;
+                if (independentScale) {
+                    let localMinX = Infinity, localMaxX = -Infinity, localMinY = Infinity, localMaxY = -Infinity;
+                    kPcaPoints.forEach(p => {
+                        localMinX = Math.min(localMinX, p[0]); localMaxX = Math.max(localMaxX, p[0]);
+                        localMinY = Math.min(localMinY, p[1]); localMaxY = Math.max(localMaxY, p[1]);
+                    });
+                    kMinX = localMinX;
+                    kMinY = localMinY;
+                    kRange = Math.max(localMaxX - localMinX, localMaxY - localMinY) || 1;
+                }
+                const drawIdxs = kPcaIndices || kPcaPoints.map((_, i) => i);
+                kPcaPoints.forEach((p, localI) => {
+                    const globalI = drawIdxs[localI];
+                    const clusterIdx = c.assignments[globalI];
+                    kPcaCtx.fillStyle = COLORS[clusterIdx % COLORS.length];
+                    const x = ((p[0] - kMinX) / kRange) * kPcaCanvas.width;
+                    const y = ((p[1] - kMinY) / kRange) * kPcaCanvas.height;
+                    kPcaCtx.beginPath();
+                    kPcaCtx.arc(x, y, 2, 0, Math.PI * 2);
+                    kPcaCtx.fill();
+                });
+            } else {
+                kPcaCtx.fillStyle = '#9ca3af';
+                kPcaCtx.font = '12px sans-serif';
+                kPcaCtx.textAlign = 'center';
+                kPcaCtx.fillText('Computing...', kPcaCanvas.width / 2, kPcaCanvas.height / 2);
+            }
+        });
 
-        const dendroCtx = dendroCanvas.getContext('2d');
-        const dendroData = Array.isArray(dendrogramsByStep) ? dendrogramsByStep[t] : null;
-        if (dendroData && dendroData.nLeaves) {
-            drawDendrogram(dendroCtx, dendroData, dendroCanvas.width, dendroCanvas.height);
-        } else {
-            dendroCtx.fillStyle = '#9ca3af';
-            dendroCtx.font = '12px sans-serif';
-            dendroCtx.textAlign = 'center';
-            dendroCtx.fillText('Computing...', dendroCanvas.width / 2, dendroCanvas.height / 2);
-        }
+        appendCollapsibleSection(panel, 'dendro', `Dendrogram (${t + 1})`, (body) => {
+            const dendroCanvas = document.createElement('canvas');
+            dendroCanvas.width = plotSize;
+            dendroCanvas.height = dendroHeight;
+            dendroCanvas.className = 'dendrogram-canvas';
+            dendroCanvas.style.backgroundColor = '#111827';
+            dendroCanvas.style.border = '1px solid #374151';
+            dendroCanvas.style.aspectRatio = 'auto';
+            body.appendChild(wrapPlotCanvas(dendroCanvas, plotIdStep('dendro', t + 1)));
+
+            const dendroCtx = dendroCanvas.getContext('2d');
+            const dendroData = Array.isArray(dendrogramsByStep) ? dendrogramsByStep[t] : null;
+            if (dendroData && dendroData.nLeaves) {
+                drawDendrogram(dendroCtx, dendroData, dendroCanvas.width, dendroCanvas.height);
+            } else {
+                dendroCtx.fillStyle = '#9ca3af';
+                dendroCtx.font = '12px sans-serif';
+                dendroCtx.textAlign = 'center';
+                dendroCtx.fillText('Computing...', dendroCanvas.width / 2, dendroCanvas.height / 2);
+            }
+        });
 
         container.appendChild(panel);
     });

@@ -16,6 +16,25 @@ function ensureStore() {
     if (!state.plotAnnotations || typeof state.plotAnnotations !== 'object') {
         state.plotAnnotations = {};
     }
+    if (!state.plotAnnotationEmphasis || typeof state.plotAnnotationEmphasis !== 'object') {
+        state.plotAnnotationEmphasis = {};
+    }
+}
+
+export function isPlotAnnotationEmphasis(plotId) {
+    ensureStore();
+    return !!state.plotAnnotationEmphasis[plotId];
+}
+
+function setPlotAnnotationEmphasis(plotId, on) {
+    ensureStore();
+    if (on) state.plotAnnotationEmphasis[plotId] = true;
+    else delete state.plotAnnotationEmphasis[plotId];
+}
+
+export function snapshotHasAnnotationEmphasis(snapshot) {
+    if (!snapshot?.emphasisByPlotId) return false;
+    return Object.values(snapshot.emphasisByPlotId).some(Boolean);
 }
 
 export function isDrawablePlotId(plotId) {
@@ -49,15 +68,16 @@ function redrawOverlay(overlay, plotId) {
     const ctx = overlay.getContext('2d');
     ctx.clearRect(0, 0, w, h);
 
+    const emphasis = isPlotAnnotationEmphasis(plotId);
     for (const e of getEllipses(plotId)) {
-        ctx.strokeStyle = 'rgba(250, 204, 21, 0.95)';
-        ctx.lineWidth = 2.5;
-        ctx.setLineDash([7, 5]);
+        ctx.strokeStyle = emphasis ? 'rgba(251, 146, 60, 0.98)' : 'rgba(250, 204, 21, 0.95)';
+        ctx.lineWidth = emphasis ? 3.25 : 2.5;
+        ctx.setLineDash(emphasis ? [5, 4] : [7, 5]);
         ctx.beginPath();
         ctx.ellipse(e.cx * w, e.cy * h, e.rx * w, e.ry * h, 0, 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = 'rgba(250, 204, 21, 0.15)';
+        ctx.fillStyle = emphasis ? 'rgba(251, 146, 60, 0.22)' : 'rgba(250, 204, 21, 0.15)';
         ctx.fill();
     }
 }
@@ -162,13 +182,61 @@ function stackForPlotId(plotId) {
     return document.querySelector(`.plot-feedback-wrap[data-plot-id="${plotId}"] .plot-draw-stack`);
 }
 
+function syncEmphasisButton(wrap, plotId) {
+    if (!wrap || !isDrawablePlotId(plotId)) return;
+    const n = getEllipses(plotId).length;
+    const toolbar = wrap.querySelector('.plot-feedback-toolbar');
+    if (!toolbar) return;
+
+    let btn = toolbar.querySelector('.plot-feedback-btn--emphasis');
+    if (!n) {
+        if (btn) btn.remove();
+        setPlotAnnotationEmphasis(plotId, false);
+        wrap.classList.remove('plot-annotation-emphasis');
+        return;
+    }
+
+    if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'plot-feedback-btn plot-feedback-btn--emphasis';
+        btn.textContent = '!';
+        btn.title = 'Must-match: explore will prioritize these circles above all other goals';
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const next = !isPlotAnnotationEmphasis(plotId);
+            setPlotAnnotationEmphasis(plotId, next);
+            syncEmphasisButton(wrap, plotId);
+            const overlay = wrap.querySelector('canvas.plot-annotation-layer');
+            if (overlay) redrawOverlay(overlay, plotId);
+            updateDrawHint(wrap.querySelector('.plot-draw-stack'));
+        });
+        toolbar.insertBefore(btn, toolbar.firstChild);
+    }
+
+    const on = isPlotAnnotationEmphasis(plotId);
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    wrap.classList.toggle('plot-annotation-emphasis', on);
+}
+
 function updateDrawHint(stack) {
     if (!stack) return;
     const hint = stack.querySelector('.plot-draw-hint');
     if (!hint) return;
-    const plotId = stack.closest('.plot-feedback-wrap')?.dataset?.plotId;
+    const wrap = stack.closest('.plot-feedback-wrap');
+    const plotId = wrap?.dataset?.plotId;
     const n = plotId ? getEllipses(plotId).length : 0;
-    hint.textContent = n ? `${n} region(s) — drag to add, right-click undo` : 'drag to circle a cluster';
+    const emphasis = plotId && isPlotAnnotationEmphasis(plotId);
+    if (!n) {
+        hint.textContent = 'drag to circle a cluster';
+    } else if (emphasis) {
+        hint.textContent = `${n} region(s) — ! must-match ON`;
+    } else {
+        hint.textContent = `${n} region(s) — drag to add, right-click undo`;
+    }
+    if (wrap && plotId) syncEmphasisButton(wrap, plotId);
 }
 
 /** Stack data canvas + annotation overlay inside feedback wrap. */
@@ -217,6 +285,7 @@ export function attachAnnotationLayer(wrap, plotId) {
     };
     sync();
     requestAnimationFrame(sync);
+    syncEmphasisButton(wrap, plotId);
 }
 
 export function refreshAnnotationLayers(root = document) {
@@ -229,10 +298,14 @@ export function refreshAnnotationLayers(root = document) {
 export function captureAnnotationSnapshot() {
     ensureStore();
     const byPlotId = {};
+    const emphasisByPlotId = {};
     for (const [plotId, ellipses] of Object.entries(state.plotAnnotations)) {
-        if (ellipses?.length) byPlotId[plotId] = ellipses.map(e => ({ ...e }));
+        if (ellipses?.length) {
+            byPlotId[plotId] = ellipses.map(e => ({ ...e }));
+            if (isPlotAnnotationEmphasis(plotId)) emphasisByPlotId[plotId] = true;
+        }
     }
-    return { byPlotId };
+    return { byPlotId, emphasisByPlotId };
 }
 
 function clearAnnotationDomForPlotIds(plotIdFilter) {
@@ -247,12 +320,16 @@ function clearAnnotationDomForPlotIds(plotIdFilter) {
         }
         const hint = stack?.querySelector('.plot-draw-hint');
         if (hint) hint.textContent = 'drag to circle a cluster';
+        wrap?.classList?.remove('plot-annotation-emphasis');
+        const btn = wrap?.querySelector('.plot-feedback-btn--emphasis');
+        if (btn) btn.remove();
     });
 }
 
 /** Remove all PCA + kernel PCA sketches (e.g. new dataset). */
 export function clearPlotAnnotations() {
     state.plotAnnotations = {};
+    state.plotAnnotationEmphasis = {};
     clearAnnotationDomForPlotIds(() => true);
 }
 
@@ -260,7 +337,10 @@ export function clearPlotAnnotations() {
 export function clearKernelPcaPlotAnnotations() {
     ensureStore();
     for (const plotId of Object.keys(state.plotAnnotations)) {
-        if (plotId.startsWith('kpca:')) delete state.plotAnnotations[plotId];
+        if (plotId.startsWith('kpca:')) {
+            delete state.plotAnnotations[plotId];
+            delete state.plotAnnotationEmphasis[plotId];
+        }
     }
     clearAnnotationDomForPlotIds(plotId => plotId.startsWith('kpca:'));
 }
@@ -269,17 +349,25 @@ export function formatAnnotationPromptBlock(snapshot) {
     if (!snapshot?.byPlotId) return '';
     const lines = [];
     let total = 0;
+    let emphasisCount = 0;
     for (const [plotId, ellipses] of Object.entries(snapshot.byPlotId)) {
         if (!ellipses?.length) continue;
         total += ellipses.length;
+        const mustMatch = !!snapshot.emphasisByPlotId?.[plotId];
+        if (mustMatch) emphasisCount += ellipses.length;
+        const flag = mustMatch ? ' [!! MUST-MATCH — non-negotiable]' : '';
         lines.push(
-            `- ${labelForPlotId(plotId)}: ${ellipses.length} yellow circle(s) — ` +
+            `- ${labelForPlotId(plotId)}: ${ellipses.length} yellow circle(s)${flag} — ` +
             'MANDATORY: every point inside each circle = ONE solid cluster color; each circle = a DIFFERENT color than the others.'
         );
     }
     if (!lines.length) return '';
+    const emphasisLead = emphasisCount
+        ? `The user marked ${emphasisCount} region(s) with ! (must-match). Treat those as STRICTER than any other goal — match circles before improving inertia, transport cost, or parsimony.\n`
+        : '';
     return (
         '[HIGHEST PRIORITY — user cluster sketches]\n' +
+        emphasisLead +
         'The user drew yellow circles on PCA/kernel PCA plots. This overrides generic elbow/parsimony goals when they conflict.\n' +
         `Total regions: ${total}. Rules:\n` +
         '1) Inside each circle: ≥~85% of points must share one cluster assignment (color-pure).\n' +
@@ -309,7 +397,8 @@ export function mergeAnnotationsIntoPlan(plan, snapshot, T) {
     }
 
     const w = { ...plan.weights };
-    w.wSep = Math.max(w.wSep ?? 0.15, 0.55);
+    const hasEmphasis = snapshotHasAnnotationEmphasis(snapshot);
+    w.wSep = Math.max(w.wSep ?? 0.15, hasEmphasis ? 0.78 : 0.55);
 
     return {
         ...plan,
@@ -317,6 +406,7 @@ export function mergeAnnotationsIntoPlan(plan, snapshot, T) {
         targetK,
         annotationMinK,
         prioritizeAnnotations: true,
+        strictAnnotationMatch: hasEmphasis,
         notes: [...new Set(notes)]
     };
 }

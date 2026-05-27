@@ -296,13 +296,15 @@ export function evaluateAnnotationFidelity({
 }
 
 /** Large penalty on explore combined score (lower is better). */
-export function annotationFidelityPenalty(fidelity, { strict = true } = {}) {
+export function annotationFidelityPenalty(fidelity, { strict = true, emphasis = false } = {}) {
     if (!fidelity?.totalCircles) return 0;
     const gap = 1 - Math.max(0, Math.min(1, fidelity.overall));
     const failCount = fidelity.failures?.length ?? 0;
-    let pen = 620 * gap * fidelity.totalCircles;
-    if (strict) pen += 140 * failCount;
-    if (!fidelity.satisfied && fidelity.overall < 0.75) pen += 280;
+    const scale = emphasis ? 1.55 : 1;
+    let pen = 620 * gap * fidelity.totalCircles * scale;
+    if (strict) pen += 140 * failCount * scale;
+    if (!fidelity.satisfied && fidelity.overall < 0.75) pen += 280 * scale;
+    if (emphasis && !fidelity.satisfied) pen += 220;
     return pen;
 }
 

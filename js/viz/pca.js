@@ -1,16 +1,44 @@
-import { COLORS } from '../constants.js';
+import { clusterColorHex } from './plotColors.js';
 import { wrapPlotCanvas, plotIdStep } from '../ui/plotFeedback.js';
 import { refreshAnnotationLayers } from '../ui/plotAnnotations.js';
+import {
+    buildPca3DSectionBody,
+    disposePca3DInContainer,
+    syncPca3DPlotsInContainer
+} from './pca3d.js';
 
-/** Persists across scatter re-draws (kernel PCA / dendrogram still computing). */
-export const plotSectionCollapsed = {
+/** Default collapsed state when no per-step override exists. */
+const plotSectionDefaultCollapsed = {
     pca: false,
+    pca3d: true,
     kpca: true,
     dendro: true
 };
 
-function appendCollapsibleSection(panel, sectionKey, titleText, buildContent) {
-    const collapsed = !!plotSectionCollapsed[sectionKey];
+/** Per-step collapse state: keys like `kpca:3`. Persists across scatter re-draws. */
+export const plotSectionCollapsed = {};
+
+function plotSectionStateKey(sectionKey, stepIndex) {
+    return stepIndex != null ? `${sectionKey}:${stepIndex}` : sectionKey;
+}
+
+function isPlotSectionCollapsed(sectionKey, stepIndex) {
+    const key = plotSectionStateKey(sectionKey, stepIndex);
+    if (Object.prototype.hasOwnProperty.call(plotSectionCollapsed, key)) {
+        return !!plotSectionCollapsed[key];
+    }
+    return !!plotSectionDefaultCollapsed[sectionKey];
+}
+
+/** Called when a collapsible plot section is expanded: `(sectionKey, stepIndex) => void`. */
+let onPlotSectionExpand = null;
+
+export function setPlotSectionExpandHandler(handler) {
+    onPlotSectionExpand = typeof handler === 'function' ? handler : null;
+}
+
+function appendCollapsibleSection(panel, sectionKey, titleText, buildContent, stepIndex = null) {
+    const collapsed = isPlotSectionCollapsed(sectionKey, stepIndex);
     const section = document.createElement('div');
     section.className = `plot-section plot-section--${sectionKey}`;
     if (collapsed) section.classList.add('plot-section--collapsed');
@@ -33,12 +61,16 @@ function appendCollapsibleSection(panel, sectionKey, titleText, buildContent) {
     if (collapsed) body.hidden = true;
 
     toggle.addEventListener('click', () => {
-        const nowCollapsed = !body.hidden;
+        const wasCollapsed = body.hidden;
+        const nowCollapsed = !wasCollapsed;
         body.hidden = nowCollapsed;
-        plotSectionCollapsed[sectionKey] = nowCollapsed;
+        plotSectionCollapsed[plotSectionStateKey(sectionKey, stepIndex)] = nowCollapsed;
         section.classList.toggle('plot-section--collapsed', nowCollapsed);
         chevron.textContent = nowCollapsed ? '▶' : '▼';
         toggle.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+        if (!nowCollapsed && wasCollapsed) {
+            onPlotSectionExpand?.(sectionKey, stepIndex);
+        }
     });
 
     buildContent(body);
@@ -109,9 +141,14 @@ export function drawScatterPlots(
     {
         independentScale = false,
         kernelPcaPointsByStep = null,
-        dendrogramsByStep = null
+        kernelPcaRequestedSteps = null,
+        dendrogramsByStep = null,
+        dendrogramRequestedSteps = null,
+        pca3dPointsByStep = null,
+        pca3dRequestedSteps = null
     } = {}
 ) {
+    disposePca3DInContainer(container);
     container.innerHTML = '';
 
     let globalMinX = Infinity, globalMaxX = -Infinity, globalMinY = Infinity, globalMaxY = -Infinity;
@@ -170,15 +207,18 @@ export function drawScatterPlots(
                 range = Math.max(localMaxX - localMinX, localMaxY - localMinY) || 1;
             }
             pcaPoints.forEach((p, i) => {
-                const clusterIdx = c.assignments[i];
-                pcaCtx.fillStyle = COLORS[clusterIdx % COLORS.length];
+                pcaCtx.fillStyle = clusterColorHex(c.assignments[i]);
                 const x = ((p[0] - minX) / range) * pcaCanvas.width;
                 const y = ((p[1] - minY) / range) * pcaCanvas.height;
                 pcaCtx.beginPath();
                 pcaCtx.arc(x, y, 2, 0, Math.PI * 2);
                 pcaCtx.fill();
             });
-        });
+        }, t);
+
+        appendCollapsibleSection(panel, 'pca3d', '3D PCA', (body) => {
+            buildPca3DSectionBody(body, t, plotSize, plotIdStep('pca3d', t + 1));
+        }, t);
 
         appendCollapsibleSection(panel, 'kpca', 'Kernel PCA', (body) => {
             const kPcaCanvas = document.createElement('canvas');
@@ -206,9 +246,9 @@ export function drawScatterPlots(
                 }
                 const drawIdxs = kPcaIndices || kPcaPoints.map((_, i) => i);
                 kPcaPoints.forEach((p, localI) => {
+                    if (!p) return;
                     const globalI = drawIdxs[localI];
-                    const clusterIdx = c.assignments[globalI];
-                    kPcaCtx.fillStyle = COLORS[clusterIdx % COLORS.length];
+                    kPcaCtx.fillStyle = clusterColorHex(c.assignments[globalI]);
                     const x = ((p[0] - kMinX) / kRange) * kPcaCanvas.width;
                     const y = ((p[1] - kMinY) / kRange) * kPcaCanvas.height;
                     kPcaCtx.beginPath();
@@ -219,9 +259,14 @@ export function drawScatterPlots(
                 kPcaCtx.fillStyle = '#9ca3af';
                 kPcaCtx.font = '12px sans-serif';
                 kPcaCtx.textAlign = 'center';
-                kPcaCtx.fillText('Computing...', kPcaCanvas.width / 2, kPcaCanvas.height / 2);
+                const pending = kernelPcaRequestedSteps?.has?.(t) && !kernelPcaPointsByStep?.[t];
+                kPcaCtx.fillText(
+                    pending ? 'Computing…' : 'Expand to compute',
+                    kPcaCanvas.width / 2,
+                    kPcaCanvas.height / 2
+                );
             }
-        });
+        }, t);
 
         appendCollapsibleSection(panel, 'dendro', `Dendrogram (${t + 1})`, (body) => {
             const dendroCanvas = document.createElement('canvas');
@@ -241,14 +286,27 @@ export function drawScatterPlots(
                 dendroCtx.fillStyle = '#9ca3af';
                 dendroCtx.font = '12px sans-serif';
                 dendroCtx.textAlign = 'center';
-                dendroCtx.fillText('Computing...', dendroCanvas.width / 2, dendroCanvas.height / 2);
+                const dendroPending = dendrogramRequestedSteps?.has?.(t) && !dendroData?.nLeaves;
+                dendroCtx.fillText(
+                    dendroPending ? 'Computing…' : 'Expand to compute',
+                    dendroCanvas.width / 2,
+                    dendroCanvas.height / 2
+                );
             }
-        });
+        }, t);
 
         container.appendChild(panel);
     });
 
-    requestAnimationFrame(() => refreshAnnotationLayers(container));
+    requestAnimationFrame(() => {
+        refreshAnnotationLayers(container);
+        syncPca3DPlotsInContainer(container, {
+            pca3dPointsByStep,
+            clusters,
+            plotSize,
+            pca3dRequestedSteps
+        }).catch(err => console.error('syncPca3DPlotsInContainer', err));
+    });
 }
 
 function drawDendrogram(ctx, dendro, width, height) {
@@ -322,7 +380,26 @@ function drawDendrogram(ctx, dendro, width, height) {
     drawNode(root);
 }
 
-export function computeKernelPcaProjection(data, n, d, perplexity = 30, { yieldEvery = 5, maxPoints = Infinity } = {}) {
+/** Max points for kernel PCA (O(n²) memory/time). Larger clouds are subsampled. */
+export const KERNEL_PCA_MAX_POINTS = 1500;
+
+function uniformConditionalRow(n, i) {
+    const row = new Float64Array(n);
+    if (n <= 1) return row;
+    const val = 1 / (n - 1);
+    for (let j = 0; j < n; j++) {
+        if (j !== i) row[j] = val;
+    }
+    return row;
+}
+
+export function computeKernelPcaProjection(
+    data,
+    n,
+    d,
+    perplexity = 30,
+    { yieldEvery = 5, maxPoints = KERNEL_PCA_MAX_POINTS } = {}
+) {
     return (async () => {
         let idx = Array.from({ length: n }, (_, i) => i);
         if (Number.isFinite(maxPoints) && n > maxPoints) {
@@ -331,14 +408,24 @@ export function computeKernelPcaProjection(data, n, d, perplexity = 30, { yieldE
             n = idx.length;
         }
 
+        if (n < 1) {
+            return { coords: [], sampledIndices: idx };
+        }
+        if (n === 1) {
+            return { coords: [[0, 0]], sampledIndices: idx.slice() };
+        }
+
         // Build sampled data matrix view (still dense).
         const X = new Float64Array(n * d);
         for (let i = 0; i < n; i++) {
             const srcI = idx[i];
-            for (let j = 0; j < d; j++) X[i * d + j] = data[srcI * d + j];
+            for (let j = 0; j < d; j++) {
+                const v = data[srcI * d + j];
+                X[i * d + j] = Number.isFinite(v) ? v : 0;
+            }
         }
 
-        // Squared distances
+        // Squared distances (clamp non-finite to avoid exp underflow leaving null P rows).
         const dist2 = Array.from({ length: n }, () => new Float64Array(n));
         for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
@@ -347,13 +434,17 @@ export function computeKernelPcaProjection(data, n, d, perplexity = 30, { yieldE
                     const diff = X[i * d + dim] - X[j * d + dim];
                     s += diff * diff;
                 }
+                if (!Number.isFinite(s)) s = 1e12;
                 dist2[i][j] = s;
                 dist2[j][i] = s;
             }
         }
 
         // Compute conditional probabilities P_{j|i} (t-SNE style) and then symmetrize.
-        const targetPerplexity = perplexity;
+        const targetPerplexity = Math.min(
+            Math.max(1, perplexity),
+            Math.max(1, (n - 1) / 3)
+        );
         const Pcond = Array.from({ length: n }, () => new Float64Array(n));
 
         const HYPER_ITERS = 25;
@@ -371,12 +462,14 @@ export function computeKernelPcaProjection(data, n, d, perplexity = 30, { yieldE
                 let sumP = 0;
                 for (let j = 0; j < n; j++) {
                     if (j === i) continue;
-                    const v = Math.exp(-beta * dist2[i][j]);
+                    const dij = dist2[i][j];
+                    const v = Number.isFinite(dij) ? Math.exp(-beta * dij) : 0;
                     Prow[j] = v;
                     sumP += v;
                 }
-                if (sumP === 0) {
+                if (sumP === 0 || !Number.isFinite(sumP)) {
                     beta *= 2;
+                    if (iter === HYPER_ITERS - 1) finalP = uniformConditionalRow(n, i);
                     continue;
                 }
                 // normalize
@@ -410,7 +503,7 @@ export function computeKernelPcaProjection(data, n, d, perplexity = 30, { yieldE
                 finalP = Prow;
             }
 
-            Pcond[i] = finalP;
+            Pcond[i] = finalP ?? uniformConditionalRow(n, i);
             if (i % yieldEvery === 0) await new Promise(r => setTimeout(r, 0));
         }
 

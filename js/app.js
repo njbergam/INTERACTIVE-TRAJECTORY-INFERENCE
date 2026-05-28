@@ -8,7 +8,15 @@ import { exactOT, sinkhorn, sinkhornPointwise, gromovWasserstein } from './algor
 import { extractSequencesFromZip } from './data/npz.js';
 import { extractSequencesFromPkl } from './data/pyodide.js';
 
-import { runPCARaw, drawScatterPlots, computeKernelPcaProjection, computeDendrogram } from './viz/pca.js';
+import {
+    runPCARaw,
+    drawScatterPlots,
+    computeKernelPcaProjection,
+    computeDendrogram,
+    KERNEL_PCA_MAX_POINTS,
+    setPlotSectionExpandHandler
+} from './viz/pca.js';
+import { runPCARaw3D } from './viz/pca3d.js';
 import { drawGraph } from './viz/graph.js';
 import { drawLocalElbowPlot, drawGlobalElbowPlot } from './viz/elbow.js';
 
@@ -56,7 +64,10 @@ import {
     rememberTriedConfig,
     hasTriedConfig,
     exploreComplexityPenalty,
-    kConfigKey
+    kConfigKey,
+    dequeueBestCandidate,
+    warmKMeansCacheForExplore,
+    rankCandidatesByHeuristic
 } from './ai/exploreSearch.js';
 import { aggregateTrajectoryShapeStats, buildTrajectoryClusterDiagnostics } from './ai/shapeStats.js';
 import { buildClusterVisionMontage, analyzeClusterMontage, visionQualityToScore } from './ai/visionExplore.js';
@@ -74,6 +85,13 @@ let lastLoadedFileName = null;
 let lastClusters = null;
 let lastIndependentScale = false;
 let analysisJobId = 0;
+/** Step indices whose Kernel PCA / dendrogram section was expanded at least once. */
+const kernelPcaStepsRequested = new Set();
+const kernelPcaComputingSteps = new Set();
+const dendrogramStepsRequested = new Set();
+const dendrogramComputingSteps = new Set();
+const pca3dStepsRequested = new Set();
+const pca3dComputingSteps = new Set();
 let pointOtJobId = 0;
 
 const drawnGlobalInertiaPoints = [];
@@ -714,11 +732,7 @@ function refreshExploreVisualization(clusters) {
     state.plotSize = getResizePlotSize(state.plotSize);
     elements.elbowCanvases.forEach((canvas, t) => drawLocalElbowPlot(canvas, state.cache[t], state.kValues[t]));
     lastClusters = clusters;
-    drawScatterPlots(elements.scatterContainer, state.pcaPoints, clusters, state.plotSize, {
-        independentScale: lastIndependentScale,
-        kernelPcaPointsByStep: state.kernelPcaPoints,
-        dendrogramsByStep: state.dendrograms
-    });
+    drawScatterPlots(elements.scatterContainer, state.pcaPoints, clusters, state.plotSize, scatterPlotOptions());
     requestAnimationFrame(() => refreshAnnotationLayers(elements.scatterContainer));
     const couplings = [];
     for (let t = 0; t < clusters.length - 1; t++) {
@@ -814,9 +828,11 @@ function computeEmbeddingSeparationScore(points2d, assignments, k) {
     const count = new Int32Array(k);
     for (let i = 0; i < n; i++) {
         const c = assignments[i];
+        const p = points2d[i];
+        if (!p || c < 0 || c >= k) continue;
         count[c]++;
-        sumX[c] += points2d[i][0];
-        sumY[c] += points2d[i][1];
+        sumX[c] += p[0];
+        sumY[c] += p[1];
     }
 
     const cx = new Float64Array(k);
@@ -831,8 +847,10 @@ function computeEmbeddingSeparationScore(points2d, assignments, k) {
     let within = 0;
     for (let i = 0; i < n; i++) {
         const c = assignments[i];
-        const dx = points2d[i][0] - cx[c];
-        const dy = points2d[i][1] - cy[c];
+        const p = points2d[i];
+        if (!p || c < 0 || c >= k) continue;
+        const dx = p[0] - cx[c];
+        const dy = p[1] - cy[c];
         within += dx * dx + dy * dy;
     }
     within = within / Math.max(n, 1);
@@ -1031,8 +1049,8 @@ async function runAiExplore({ durationMs = 10_000, prompt = '' } = {}) {
                     if (lastLlmReasoning) appendAiExploreMessage('assistant', lastLlmReasoning);
                     mergeLlmWeights(plan, initial.weights);
                     const queued = filterUntriedConfigs(initial.candidates, triedConfigs, plan);
-                    candidateQueue.push(...queued);
-                    appendAiExploreMessage('status', `LLM proposed ${queued.length} new candidate K settings.`);
+                    candidateQueue.push(...rankCandidatesByHeuristic(queued, plan, best));
+                    appendAiExploreMessage('status', `LLM proposed ${queued.length} ranked candidate K settings (elbow-bounded).`);
                 })
                 .catch(err => {
                     if (isExploreCancelled(myToken, signal)) {
@@ -1070,12 +1088,8 @@ async function runAiExplore({ durationMs = 10_000, prompt = '' } = {}) {
             annotationSnapshot
         };
         startingK = applyPromptConstraints(state.kValues.slice(), plan);
-        for (let t = 0; t < T; t++) {
-            for (let k = 1; k <= 15; k++) {
-                if (!state.cache[t][k]) state.cache[t][k] = kMeans(rawSequences[t], k);
-            }
-        }
-        candidateQueue.push(...seedExploreCandidates(plan, T, startingK, triedConfigs));
+        warmKMeansCacheForExplore(T, plan, [startingK]);
+        candidateQueue.push(...seedExploreCandidates(plan, T, startingK, triedConfigs, null));
 
         applyKValuesToUI(startingK, plan);
         const startScore = scoreConfigFast(startingK, scoreOpts);
@@ -1160,16 +1174,20 @@ async function runAiExplore({ durationMs = 10_000, prompt = '' } = {}) {
             while (pickAttempts < 16) {
                 pickAttempts++;
                 if (candidateQueue.length) {
-                    cand = candidateQueue.shift();
+                    cand = dequeueBestCandidate(candidateQueue, plan, best);
                 } else {
                     cand = proposeExploreCandidate({
                         plan,
                         best,
                         startingK,
                         triedSet: triedConfigs,
-                        T
+                        T,
+                        trials,
+                        budgetMs,
+                        exploreStart
                     });
                 }
+                if (!cand) continue;
                 if (!hasTriedConfig(triedConfigs, cand)) break;
                 skippedDuplicates++;
             }
@@ -1181,6 +1199,7 @@ async function runAiExplore({ durationMs = 10_000, prompt = '' } = {}) {
 
             const prevCombined = best.combined;
             best = tryCandidate(cand, best, scoreOpts, scoreConfigFast);
+            warmKMeansCacheForExplore(T, plan, [best.kValues, cand]);
             trials++;
             const s = best.score;
             recentTrials.push({
@@ -1391,7 +1410,15 @@ async function finishLoadingDataset() {
     state.globalHistory = {};
     state.pointOtGammaCache = Array(rawSequences.length - 1).fill().map(() => ({}));
     state.pointOtAggCache = Array(rawSequences.length - 1).fill().map(() => ({}));
+    analysisJobId++;
+    kernelPcaStepsRequested.clear();
+    kernelPcaComputingSteps.clear();
+    dendrogramStepsRequested.clear();
+    dendrogramComputingSteps.clear();
+    pca3dStepsRequested.clear();
+    pca3dComputingSteps.clear();
     state.kernelPcaPoints = [];
+    state.pca3dPoints = [];
     state.dendrograms = [];
     clearPlotAnnotations();
     state.kernelPcaPerplexity = getKernelPcaPerplexity();
@@ -1406,11 +1433,7 @@ async function finishLoadingDataset() {
     fitMainCanvases();
     updateVisualization();
 
-    // Progressive "easy stuff first": dendrograms first, then kernel PCA.
-    startProgressiveDendrogramsAndKernelPca().catch(err => {
-        elements.status.textContent = `Error computing kernel PCA/dendrogram: ${err.message}`;
-        console.error(err);
-    });
+    // Kernel PCA and dendrograms are computed when their section is expanded.
 
     // Point-level OT only applies to standard OT (non-GW) and epsilon>0.
     // We start it lazily when epsilon becomes > 0.
@@ -1665,7 +1688,8 @@ function initUI() {
         state.kernelPcaPerplexity = perp;
         clearTimeout(kpcaTimer);
         kpcaTimer = setTimeout(() => {
-            startProgressiveKernelPca().catch(err => console.error(err));
+            if (kernelPcaStepsRequested.size === 0) return;
+            recomputeKernelPcaRequested().catch(err => console.error(err));
         }, 500);
     };
 
@@ -1673,7 +1697,8 @@ function initUI() {
         state.dendrogramLinkage = getDendrogramLinkage();
         clearTimeout(dendroTimer);
         dendroTimer = setTimeout(() => {
-            startProgressiveDendrograms().catch(err => console.error(err));
+            if (dendrogramStepsRequested.size === 0) return;
+            recomputeDendrogramsRequested().catch(err => console.error(err));
         }, 150);
     };
 
@@ -2067,83 +2092,231 @@ function updateVisualization() {
     lastClusters = clusters;
     lastIndependentScale = gwEdges.length > 0;
 
-    drawScatterPlots(elements.scatterContainer, state.pcaPoints, clusters, state.plotSize, {
-        independentScale: lastIndependentScale,
-        kernelPcaPointsByStep: state.kernelPcaPoints,
-        dendrogramsByStep: state.dendrograms
-    });
+    drawScatterPlots(elements.scatterContainer, state.pcaPoints, clusters, state.plotSize, scatterPlotOptions());
     drawGraph(elements, clusters, couplings, drawnEdgePaths);
     updateGlobalCostFrontiers(clusters);
 }
 
-async function startProgressiveDendrograms() {
-    const T = rawSequences.length;
-    if (!T) return;
-
-    const jobId = ++analysisJobId;
-    state.computingDendrograms = true;
-    elements.status.textContent = `Computing dendrograms (${getDendrogramLinkage()})…`;
-
-    state.dendrograms = Array(T).fill(null);
-    for (let t = 0; t < T; t++) {
-        if (jobId !== analysisJobId) return; // superseded
-        elements.status.textContent = `Computing dendrograms (${getDendrogramLinkage()})… step ${t + 1}/${T}`;
-        const seq = rawSequences[t];
-        state.dendrograms[t] = await computeDendrogram(seq.data, seq.shape[0], seq.shape[1], state.dendrogramLinkage, { yieldEvery: 1, maxPoints: Infinity });
-
-        if (lastClusters) {
-            drawScatterPlots(elements.scatterContainer, state.pcaPoints, lastClusters, state.plotSize, {
-                independentScale: lastIndependentScale,
-                kernelPcaPointsByStep: state.kernelPcaPoints,
-                dendrogramsByStep: state.dendrograms
-            });
-        }
-    }
-
-    state.computingDendrograms = false;
+function scatterPlotOptions(overrides = {}) {
+    return {
+        independentScale: lastIndependentScale,
+        kernelPcaPointsByStep: state.kernelPcaPoints,
+        kernelPcaRequestedSteps: kernelPcaStepsRequested,
+        dendrogramsByStep: state.dendrograms,
+        dendrogramRequestedSteps: dendrogramStepsRequested,
+        pca3dPointsByStep: state.pca3dPoints,
+        pca3dRequestedSteps: pca3dStepsRequested,
+        ...overrides
+    };
 }
 
-async function startProgressiveKernelPca() {
-    const T = rawSequences.length;
-    if (!T) return;
-    if (!rawSequences.length) return;
+function redrawScatterIfReady() {
+    if (!lastClusters?.length) return;
+    drawScatterPlots(
+        elements.scatterContainer,
+        state.pcaPoints,
+        lastClusters,
+        state.plotSize,
+        scatterPlotOptions()
+    );
+    requestAnimationFrame(() => refreshAnnotationLayers(elements.scatterContainer));
+}
 
-    const jobId = ++analysisJobId;
+function ensureKernelPcaArray() {
+    const T = rawSequences.length;
+    if (!Array.isArray(state.kernelPcaPoints) || state.kernelPcaPoints.length !== T) {
+        state.kernelPcaPoints = Array(T).fill(null);
+    }
+}
+
+function ensurePca3dArray() {
+    const T = rawSequences.length;
+    if (!Array.isArray(state.pca3dPoints) || state.pca3dPoints.length !== T) {
+        state.pca3dPoints = Array(T).fill(null);
+    }
+}
+
+async function ensurePca3dStep(t) {
+    const T = rawSequences.length;
+    if (!T || t < 0 || t >= T) return;
+
+    ensurePca3dArray();
+    pca3dStepsRequested.add(t);
+    if (state.pca3dPoints[t]?.length || pca3dComputingSteps.has(t)) return;
+
+    pca3dComputingSteps.add(t);
+    state.computingPca3d = true;
+    redrawScatterIfReady();
+
+    try {
+        elements.status.textContent = `Computing 3D PCA… step ${t + 1}/${T}`;
+        const seq = rawSequences[t];
+        state.pca3dPoints[t] = runPCARaw3D(seq.data, seq.shape[0], seq.shape[1]);
+        redrawScatterIfReady();
+    } finally {
+        pca3dComputingSteps.delete(t);
+        state.computingPca3d = pca3dComputingSteps.size > 0;
+    }
+}
+
+async function ensureKernelPcaStep(t) {
+    const T = rawSequences.length;
+    if (!T || t < 0 || t >= T) return;
+
+    ensureKernelPcaArray();
+    kernelPcaStepsRequested.add(t);
+    if (state.kernelPcaPoints[t] || kernelPcaComputingSteps.has(t)) return;
+
+    kernelPcaComputingSteps.add(t);
     state.computingKernelPca = true;
-    clearKernelPcaPlotAnnotations();
-    elements.status.textContent =
-        `Computing kernel PCA (perplexity=${getKernelPcaPerplexity().toFixed(0)})… kernel PCA circles cleared.`;
-    state.kernelPcaPoints = Array(T).fill(null);
-    for (let t = 0; t < T; t++) {
-        if (jobId !== analysisJobId) return; // superseded
-        elements.status.textContent = `Computing kernel PCA… step ${t + 1}/${T}`;
+    redrawScatterIfReady();
+
+    try {
+        elements.status.textContent =
+            `Computing kernel PCA… step ${t + 1}/${T} (perplexity=${getKernelPcaPerplexity().toFixed(0)})`;
         const seq = rawSequences[t];
         state.kernelPcaPoints[t] = await computeKernelPcaProjection(
             seq.data,
             seq.shape[0],
             seq.shape[1],
             state.kernelPcaPerplexity,
+            { yieldEvery: 1, maxPoints: KERNEL_PCA_MAX_POINTS }
+        );
+        redrawScatterIfReady();
+    } finally {
+        kernelPcaComputingSteps.delete(t);
+        state.computingKernelPca = kernelPcaComputingSteps.size > 0;
+    }
+}
+
+async function recomputeKernelPcaRequested() {
+    const steps = [...kernelPcaStepsRequested].sort((a, b) => a - b);
+    if (!steps.length) return;
+
+    const jobId = ++analysisJobId;
+    clearKernelPcaPlotAnnotations();
+    ensureKernelPcaArray();
+    for (const t of steps) state.kernelPcaPoints[t] = null;
+
+    state.computingKernelPca = true;
+    redrawScatterIfReady();
+    elements.status.textContent =
+        `Computing kernel PCA (perplexity=${getKernelPcaPerplexity().toFixed(0)})… kernel PCA circles cleared.`;
+
+    try {
+        for (const t of steps) {
+            if (jobId !== analysisJobId) return;
+            kernelPcaComputingSteps.add(t);
+            elements.status.textContent = `Computing kernel PCA… step ${t + 1}/${rawSequences.length}`;
+            const seq = rawSequences[t];
+            state.kernelPcaPoints[t] = await computeKernelPcaProjection(
+                seq.data,
+                seq.shape[0],
+                seq.shape[1],
+                state.kernelPcaPerplexity,
+                { yieldEvery: 1, maxPoints: KERNEL_PCA_MAX_POINTS }
+            );
+            kernelPcaComputingSteps.delete(t);
+            redrawScatterIfReady();
+        }
+    } finally {
+        kernelPcaComputingSteps.clear();
+        state.computingKernelPca = false;
+    }
+}
+
+function ensureDendrogramArray() {
+    const T = rawSequences.length;
+    if (!Array.isArray(state.dendrograms) || state.dendrograms.length !== T) {
+        state.dendrograms = Array(T).fill(null);
+    }
+}
+
+async function ensureDendrogramStep(t) {
+    const T = rawSequences.length;
+    if (!T || t < 0 || t >= T) return;
+
+    ensureDendrogramArray();
+    dendrogramStepsRequested.add(t);
+    const existing = state.dendrograms[t];
+    if (existing?.nLeaves || dendrogramComputingSteps.has(t)) return;
+
+    dendrogramComputingSteps.add(t);
+    state.computingDendrograms = true;
+    redrawScatterIfReady();
+
+    try {
+        elements.status.textContent =
+            `Computing dendrogram… step ${t + 1}/${T} (${getDendrogramLinkage()})`;
+        const seq = rawSequences[t];
+        state.dendrograms[t] = await computeDendrogram(
+            seq.data,
+            seq.shape[0],
+            seq.shape[1],
+            state.dendrogramLinkage,
             { yieldEvery: 1, maxPoints: Infinity }
         );
-
-        if (lastClusters) {
-            drawScatterPlots(elements.scatterContainer, state.pcaPoints, lastClusters, state.plotSize, {
-                independentScale: lastIndependentScale,
-                kernelPcaPointsByStep: state.kernelPcaPoints,
-                dendrogramsByStep: state.dendrograms
-            });
-            requestAnimationFrame(() => refreshAnnotationLayers(elements.scatterContainer));
-        }
+        redrawScatterIfReady();
+    } finally {
+        dendrogramComputingSteps.delete(t);
+        state.computingDendrograms = dendrogramComputingSteps.size > 0;
     }
-
-    state.computingKernelPca = false;
 }
 
-async function startProgressiveDendrogramsAndKernelPca() {
-    // jobId is shared, so a later slider change cancels the current run.
-    await startProgressiveDendrograms();
-    await startProgressiveKernelPca();
+async function recomputeDendrogramsRequested() {
+    const steps = [...dendrogramStepsRequested].sort((a, b) => a - b);
+    if (!steps.length) return;
+
+    const jobId = ++analysisJobId;
+    ensureDendrogramArray();
+    for (const t of steps) state.dendrograms[t] = null;
+
+    state.computingDendrograms = true;
+    redrawScatterIfReady();
+    elements.status.textContent = `Computing dendrograms (${getDendrogramLinkage()})…`;
+
+    try {
+        for (const t of steps) {
+            if (jobId !== analysisJobId) return;
+            dendrogramComputingSteps.add(t);
+            elements.status.textContent =
+                `Computing dendrograms (${getDendrogramLinkage()})… step ${t + 1}/${rawSequences.length}`;
+            const seq = rawSequences[t];
+            state.dendrograms[t] = await computeDendrogram(
+                seq.data,
+                seq.shape[0],
+                seq.shape[1],
+                state.dendrogramLinkage,
+                { yieldEvery: 1, maxPoints: Infinity }
+            );
+            dendrogramComputingSteps.delete(t);
+            redrawScatterIfReady();
+        }
+    } finally {
+        dendrogramComputingSteps.clear();
+        state.computingDendrograms = false;
+    }
 }
+
+setPlotSectionExpandHandler((sectionKey, stepIndex) => {
+    if (stepIndex == null) return;
+    if (sectionKey === 'pca3d') {
+        ensurePca3dStep(stepIndex).catch(err => {
+            console.error(err);
+            elements.status.textContent = `3D PCA error: ${err.message}`;
+        });
+    } else if (sectionKey === 'kpca') {
+        ensureKernelPcaStep(stepIndex).catch(err => {
+            console.error(err);
+            elements.status.textContent = `Kernel PCA error: ${err.message}`;
+        });
+    } else if (sectionKey === 'dendro') {
+        ensureDendrogramStep(stepIndex).catch(err => {
+            console.error(err);
+            elements.status.textContent = `Dendrogram error: ${err.message}`;
+        });
+    }
+});
 
 function pointGammaKeyForEpsilon(eps) {
     return `point-sinkhorn-eps-${eps.toFixed(3)}`;

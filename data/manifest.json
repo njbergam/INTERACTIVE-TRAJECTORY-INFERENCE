@@ -1,3 +1,8 @@
 {
-  "files": ["petal.npz", "cg.npz"]
+  "files": [
+    "petal.npz",
+    "cg.npz",
+    "schiebinger_pca100.npz",
+    "zscape_notochord_timeseries.npz"
+  ]
 }

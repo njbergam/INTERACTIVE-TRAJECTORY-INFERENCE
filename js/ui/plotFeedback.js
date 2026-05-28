@@ -10,6 +10,7 @@ import { state } from '../state.js';
 
 const LABELS = {
     pca: (s) => `Step ${s} PCA scatter`,
+    pca3d: (s) => `Step ${s} 3D PCA`,
     kpca: (s) => `Step ${s} kernel PCA`,
     dendro: (s) => `Step ${s} dendrogram`,
     'elbow-local': (s) => `Step ${s} local elbow (K vs inertia)`,
@@ -146,6 +147,28 @@ export function wrapPlotCanvas(canvas, plotId) {
     return wrap;
 }
 
+/** Feedback toolbar wrapper for non-canvas plot hosts (e.g. WebGL 3D PCA). */
+export function wrapPlotHost(hostEl, plotId) {
+    if (!hostEl || !plotId) return hostEl;
+
+    const parent = hostEl.parentElement;
+    if (parent?.classList?.contains('plot-feedback-wrap') && parent.dataset.plotId === plotId) {
+        syncWrapVisual(parent, plotId);
+        return parent;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'plot-feedback-wrap';
+    wrap.dataset.plotId = plotId;
+
+    if (parent) parent.insertBefore(wrap, hostEl);
+
+    wrap.appendChild(hostEl);
+    wrap.appendChild(createFeedbackToolbar(wrap, plotId));
+    syncWrapVisual(wrap, plotId);
+    return wrap;
+}
+
 export function ensureCanvasEmphasisWrap(canvas, plotId) {
     return wrapPlotCanvas(canvas, plotId);
 }
@@ -190,13 +213,13 @@ export function mergePlotFeedbackIntoPlan(plan, snapshot) {
         if (id.startsWith('elbow-global:truepi')) w.wTrue += 0.14;
         if (id.startsWith('elbow-global:inertia')) w.wInertia += 0.14;
         if (id.startsWith('elbow-local:')) w.wInertia += 0.1;
-        if (id.startsWith('pca:') || id.startsWith('kpca:')) w.wSep += 0.12;
+        if (id.startsWith('pca:') || id.startsWith('pca3d:') || id.startsWith('kpca:')) w.wSep += 0.12;
         if (id.startsWith('dendro:')) w.wSep += 0.08;
     }
     for (const id of downs) {
         if (id.startsWith('elbow-global:truepi')) w.wTrue = Math.max(0.05, w.wTrue - 0.08);
         if (id.startsWith('elbow-global:inertia')) w.wInertia = Math.max(0.05, w.wInertia - 0.08);
-        if (id.startsWith('pca:') || id.startsWith('kpca:')) w.wSep += 0.06;
+        if (id.startsWith('pca:') || id.startsWith('pca3d:') || id.startsWith('kpca:')) w.wSep += 0.06;
     }
     const s = w.wInertia + w.wTrue;
     if (s > 0) {

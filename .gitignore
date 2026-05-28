@@ -6,9 +6,11 @@ zscape_notochord_timeseries.pkl
 plots/
 old/
 
-# data/: only petal_.npz is tracked (GitHub Pages demo)
+# data/: tracked demos + selected large .npz (see manifest.json)
 data/**
 !data/
 !data/petal.npz
 !data/cg.npz
+!data/schiebinger_pca100.npz
+!data/zscape_notochord_timeseries.npz
 !data/manifest.json

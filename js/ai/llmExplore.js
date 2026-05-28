@@ -25,9 +25,12 @@ Schemas:
 2) Next proposal: {"reasoning":"one short sentence","k_values":[...length ${T}...]}
 
 Respect user instructions exactly (fix K for specific steps, only explore certain steps, etc.).
-Prefer parsimonious K near the elbow of k-means inertia — avoid inflating K unless clearly better separation/OT cost.
+Be selective: prefer parsimonious K at or just above the inertia elbow per step (typically elbow, elbow+1, or elbow-1).
+Do NOT propose high K far above the elbow unless the user explicitly asks for more clusters.
+Change at most 1–2 timesteps per proposal; keep other steps at best_k or current_k.
+Each proposed k_values should be within ±2 of that step's elbow when elbow is known from context.
 If the user drew yellow cluster circles on PCA plots, that overrides parsimony: each circle must become one color-pure cluster and circles must get different colors; use K >= number of circles per step.
-Propose diverse candidates; do not repeat the same K vector.
+Propose 2–4 meaningfully different candidates (not random noise); never repeat recent_candidates.
 true_ot_cost is ${allowTrueCost ? 'AVAILABLE' : 'NOT available — ignore true OT'}.`;
 }
 
@@ -45,7 +48,9 @@ function buildContextMessage(ctx) {
         trials_so_far: ctx.trials,
         seconds_remaining: ctx.secondsRemaining,
         user_prompt: ctx.prompt,
-        recent_candidates: ctx.recentTrials?.slice(-5) || []
+        recent_candidates: ctx.recentTrials?.slice(-8) || [],
+        search_guidance:
+            'Stay near per-step elbow K; change ≤2 steps per trial; avoid large K jumps unless user requested.'
     }, null, 0);
 }
 
